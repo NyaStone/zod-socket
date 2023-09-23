@@ -1,0 +1,28 @@
+{
+  "name": "zod-socket",
+  "version": "0.0.1",
+  "description": "Websocket api implementing data validation",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NyaStone/zod-socket.git"
+  },
+  "keywords": [
+    "Socket.IO",
+    "zod"
+  ],
+  "author": "Pierre Lenertz",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/NyaStone/zod-socket/issues"
+  },
+  "homepage": "https://github.com/NyaStone/zod-socket#readme",
+  "dependencies": {
+    "socket.io": "^4.7.2",
+    "typescript": "^5.2.2"
+  }
+}

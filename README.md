@@ -1,2 +1,5 @@
 # zod-socket
-Websocket api implementing data validation
+As I was working with Socket.IO in TypeScript, I wanted to add type validation using zod. This meant declaring the type of events twice.
+Once for the Socket.IO Typescript type resoltion, once for the zod schema.
+
+Thus came the idea to bundle them into a single API using only the zod schema for type resolution, and data validation.
