@@ -6,6 +6,5 @@ Thus came the idea to bundle them into a single API using only the zod schema fo
 
 
 ## Currently known issues / TODOS:
-- Inter-Server events aren't being validated.
-- Missing support for multiple event arguments.
 - Missing support for acknowledgement callbacks.
+- Inter-Server events aren't being type validated. (Is it usefull ? Servers from the cluster could in theory be trusted)

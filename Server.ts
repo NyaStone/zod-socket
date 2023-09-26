@@ -1,7 +1,7 @@
 import {Server as ServerIO, ServerOptions} from "socket.io";
 import {Server as HttpServer} from "http";
 import {Server as HttpsServer} from "https";
-import { EventCategories, ZodCollection } from "./EventCategories";
+import { EventCategories, ResolveZodTypes, ZodCollection } from "./EventCategories";
 import { z } from "zod";
 
 export class Server< SocketData = {},
@@ -14,9 +14,9 @@ export class Server< SocketData = {},
             Events extends { serverToServer: ZodCollection } ? Events['serverToServer'] : ZodCollection
         > 
     extends ServerIO<
-        {[key in keyof _ClientToServer]: (z.infer<_ClientToServer[key]>)},
-        {[key in keyof _ServerToClient]: (z.infer<_ServerToClient[key]>)},
-        {[key in keyof _ServerToServer]: (z.infer<_ServerToServer[key]>)},
+        {[key in keyof _ClientToServer]: (...args: ResolveZodTypes<_ClientToServer[key]>) => void},
+        {[key in keyof _ServerToClient]: (...args: ResolveZodTypes<_ServerToClient[key]>) => void},
+        {[key in keyof _ServerToServer]: (...args: ResolveZodTypes<_ServerToServer[key]>) => void},
         SocketData
     > 
     {
@@ -37,7 +37,9 @@ export class Server< SocketData = {},
                 
                 if (this.events.clientToServer && Object.keys(this.events.clientToServer).includes(event)) {
                     try {
-                        this.events.clientToServer[event].parse(args[0]);
+                        for (let i = 0; i < this.events.clientToServer[event].length; i++) {
+                            this.events.clientToServer[event][i].parse(args[i]);
+                        }
                         next();
                     }
                     catch (e) {
