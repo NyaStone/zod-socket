@@ -14,14 +14,15 @@ export class Server< SocketData = {},
             Events extends { serverToServer: ZodCollection } ? Events['serverToServer'] : ZodCollection
         > 
     extends ServerIO<
-        {[key in keyof _ClientToServer]: (...args: ResolveZodTypes<_ClientToServer[key]>) => void},
-        {[key in keyof _ServerToClient]: (...args: ResolveZodTypes<_ServerToClient[key]>) => void},
-        {[key in keyof _ServerToServer]: (...args: ResolveZodTypes<_ServerToServer[key]>) => void},
+        {[key in keyof _ClientToServer]: ResolveZodTypes<_ClientToServer[key]>},
+        {[key in keyof _ServerToClient]: ResolveZodTypes<_ServerToClient[key]>},
+        {[key in keyof _ServerToServer]: ResolveZodTypes<_ServerToServer[key]>},
         SocketData
     > 
     {
 
     private events: Events;
+    private _superEmit: typeof this.emit;
 
     constructor(events: Events, httpServer: HttpServer, opt?: Partial<ServerOptions>);
     constructor(events: Events, httpsServer: HttpsServer, opt?: Partial<ServerOptions>);
@@ -29,7 +30,15 @@ export class Server< SocketData = {},
     constructor(events: Events, opt?: Partial<ServerOptions>);
     constructor(arg1: Events, arg2?, arg3?) {
         super(arg2, arg3);
+
         this.events = arg1;
+
+        // overriding the emit method to typecheck incoming acknowledgement
+        this._superEmit = this.emit;
+        this.emit = (...args) => {
+            return this._superEmit(...args);
+        };
+
         // adding a middleware that will apply another middleware to all sockets
         this.use((socket, next) => {
             // adding a middleware to do type validation using the zod schema
@@ -38,7 +47,9 @@ export class Server< SocketData = {},
                 if (this.events.clientToServer && Object.keys(this.events.clientToServer).includes(event)) {
                     try {
                         for (let i = 0; i < this.events.clientToServer[event].length; i++) {
-                            this.events.clientToServer[event][i].parse(args[i]);
+                            const zodArg = this.events.clientToServer[event][i];
+                            if (!Array.isArray(zodArg)) // ignoring the callback
+                                zodArg.parse(args[i]);
                         }
                         next();
                     }
