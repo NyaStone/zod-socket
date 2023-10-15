@@ -1,88 +1,171 @@
 import {Server as ServerIO, ServerOptions} from "socket.io";
 import {Server as HttpServer} from "http";
 import {Server as HttpsServer} from "https";
-import { EventCategories, ExtractAckArgs, ExtractZodCollection, ResolveEvents, ResolveToCallback, ZodCollection } from "./EventCategories";
-import { ZodTypeAny } from "zod";
-import { EventNames, EventsMap } from "socket.io/dist/typed-events";
+import { z, ZodTypeAny } from "zod";
+import { EventNames} from "socket.io/dist/typed-events";
 
-export class Server< SocketData = {},
-        Events extends Partial<EventCategories> = {}> 
+
+/**
+ * Option type definitions
+ */
+type EventCategories = {
+    clientToServer: ZodCollection,
+    serverToClient: ZodCollection,
+    serverToServer: ZodCollection
+}
+type ZodCollection = {
+    [key: string]: EventArguments;
+}
+type EventWithoutAck = readonly [...ZodTypeAny[]]
+type EventWithAck = readonly[readonly [...ZodTypeAny[]], ...ZodTypeAny[]];
+type EventArguments = EventWithAck | EventWithoutAck;
+
+
+/**
+ * Recursive type to map the tuple type to their inferred type from zod
+ * 
+ * Recursion is nessecary to obtain a propper tuple type that can be used as spread argument type for a function
+ */
+type ResolveEvent<
+    Args extends EventArguments, 
+    Callback extends (...args: any[]) => void = ()=>void
+    > =
+        Args['length'] extends 0
+            ? Callback
+            : Args[0] extends EventWithoutAck 
+                ? (...args: [
+                    ...Parameters<ResolveEvent<Args extends readonly[first: any, ...rest: infer Rest] ? Rest : never>>,
+                    ResolveAcknowledgement<Args[0]>]
+                ) => void
+                : (...args: [
+                    Args[0] extends ZodTypeAny ? z.infer<Args[0]>: never, 
+                    ...Parameters<ResolveEvent<Args extends readonly[first: any, ...rest: infer Rest] ? Rest : never, Callback>>]
+                ) => void
+
+/**
+ * Second recursive type, used to differenciate the names of parameters of the resolved function
+ */
+type ResolveAcknowledgement<
+    Args extends EventWithoutAck, 
+    Callback extends (...args: any[]) => void = ()=>void
+    > = 
+    Args['length'] extends 0
+        ? Callback
+        :  (...ackArgs: [
+            Args[0] extends ZodTypeAny ? z.infer<Args[0]>: never, 
+            ...Parameters<ResolveAcknowledgement<
+                Args extends readonly[first: ZodTypeAny, ...rest: infer Rest] 
+                    ? Rest extends EventWithoutAck ? Rest : never
+                    : never,
+                Callback>>]
+        ) => void
+
+/**
+ * Type to map out the options to socket.io types
+ */
+type ResolveInferrence<EventArgs extends Partial<EventCategories>> = {
+    clientToServer: EventArgs['clientToServer'] extends ZodCollection
+        ? {[key in keyof EventArgs['clientToServer']]: ResolveEvent<EventArgs['clientToServer'][key]>}
+        : {},
+    serverToClient: EventArgs['serverToClient'] extends ZodCollection
+        ? {[key in keyof EventArgs['serverToClient']]: ResolveEvent<EventArgs['serverToClient'][key]>}
+        : {},
+    serverToServer: EventArgs['serverToServer'] extends ZodCollection
+        ? {[key in keyof EventArgs['serverToServer']]: ResolveEvent<EventArgs['serverToServer'][key]>}
+        : {}
+}
+
+export class Server<SocketData = {},
+        EventArgs extends Partial<EventCategories> = EventCategories,
+        EventFuncts extends ResolveInferrence<EventArgs> = ResolveInferrence<EventArgs>> 
     extends ServerIO<
-        ResolveEvents<ExtractZodCollection<Events, 'clientToServer'>>,
-        ResolveEvents<ExtractZodCollection<Events, 'serverToClient'>>,
-        ResolveEvents<ExtractZodCollection<Events, 'serverToServer'>>,
+        EventFuncts['clientToServer'],
+        EventFuncts['serverToClient'],
+        EventFuncts['serverToServer'],
         SocketData
     > 
     {
 
-    private events: EventCategories<ExtractZodCollection<Events, 'clientToServer'>, ExtractZodCollection<Events, 'serverToClient'>, ExtractZodCollection<Events, 'serverToServer'>>;
+    private readonly eventsArgs: EventCategories;
     private _superEmit: typeof this.emit;
 
 
-    constructor(events: Events, httpServer: HttpServer, opt?: Partial<ServerOptions>);
-    constructor(events: Events, httpsServer: HttpsServer, opt?: Partial<ServerOptions>);
-    constructor(events: Events, port: number, opt?: Partial<ServerOptions>);
-    constructor(events: Events, opt?: Partial<ServerOptions>);
-    constructor(arg1: Events, arg2?, arg3?) {
-        type ServerToClientEvents = ResolveEvents<ExtractZodCollection<Events, 'serverToClient'>>;
+
+    constructor(events: EventArgs, httpServer: HttpServer, opt?: Partial<ServerOptions>);
+    constructor(events: EventArgs, httpsServer: HttpsServer, opt?: Partial<ServerOptions>);
+    constructor(events: EventArgs, port: number, opt?: Partial<ServerOptions>);
+    constructor(events: EventArgs, opt?: Partial<ServerOptions>);
+    constructor(arg1: EventArgs, arg2?, arg3?) {
         super(arg2, arg3);
 
-        this.events = {
-            clientToServer: arg1.clientToServer ? arg1.clientToServer : {},
-            serverToClient: arg1.serverToClient ? arg1.serverToClient : {},
-            serverToServer: arg1.serverToServer ? arg1.serverToServer : {}
-        };
+        if (!arg1.clientToServer) arg1.clientToServer = {};
+        if (!arg1.serverToClient) arg1.serverToClient = {};
+        if (!arg1.serverToServer) arg1.serverToServer = {};
+        
+        this.eventsArgs = arg1 as EventCategories;
+        
 
-        // overriding the emit method to wrap the acknowlegement callback with a typechecking method
         this._superEmit = this.emit;
-        this.emit = <Event extends EventNames<ServerToClientEvents>>(event: Event, ...args: Parameters<ServerToClientEvents[Event]>) => {      
-            const newArgs = [...args] as const;
-            
-            if (typeof newArgs[newArgs.length - 1] === 'function') {
-                const arg = newArgs[newArgs.length - 1]
-                newArgs[newArgs.length - 1] = (...ackArgs) => {
+        
+        // overriding the emit method to wrap the acknowlegement callback with a typechecking method
+        // emitWithAck() uses emit under the hood so doesn't need to be changed
+        this.emit = <E extends EventNames<EventFuncts["serverToClient"]>>(
+                event: E,
+                ...args: EventFuncts['serverToClient'][E] extends ((...args: any) => any)
+                    ? Parameters<EventFuncts['serverToClient'][E]>
+                    : never) => {      
+            const serverToClient = this.eventsArgs.serverToClient ? this.eventsArgs.serverToClient : {}
+
+            if (typeof args[args.length - 1] === 'function') {
+                const arg: (...ackArgs) => void = args[args.length - 1];
+                args[args.length - 1] = ((...ackArgs) => {
                     // typecheck the args
                     for (let i = 0; i < ackArgs.length; i++) {
-                        const zodArg: ZodTypeAny = this.events.serverToClient[event.toString()][this.events.serverToClient[event.toString()].length - 1][i];
+                        const zodArg: ZodTypeAny = serverToClient[event.toString()][0][i];
                         zodArg.parse(ackArgs[i])
                     }
                     return arg(...ackArgs);
-                }
+                });
             }
             
-            return this._superEmit(event, ...newArgs);
+            return this._superEmit(event, ...args);
         };
+
 
         // adding a middleware that will apply modifications to extend sockets
         this.use((socket, next) => {
             // extending the emit method to account for acknowlegement callback type validation 
             const superEmit = socket.emit;
-            socket.emit = <Event extends EventNames<ServerToClientEvents>>(event: Event, ...args: Parameters<ServerToClientEvents[Event]>) => {
-                const newArgs = [...args] as const;
+            socket.emit = <E extends EventNames<EventFuncts["serverToClient"]>>(
+                event: E, 
+                ...args: EventFuncts['serverToClient'][E] extends ((...args: any) => any)
+                    ? Parameters<EventFuncts["serverToClient"][E]>
+                    : never) => {
             
-                if (typeof newArgs[newArgs.length - 1] === 'function') {
-                    const arg = newArgs[newArgs.length - 1]
-                    newArgs[newArgs.length - 1] = (...ackArgs) => {
+                if (typeof args[args.length - 1] === 'function') {
+                    const arg: (...ackArgs) => void = args[args.length - 1]
+                    args[args.length - 1] = (...ackArgs) => {
                         // typecheck the args
                         for (let i = 0; i < ackArgs.length; i++) {
-                            const zodArg: ZodTypeAny = this.events.serverToClient[event.toString()][this.events.serverToClient[event.toString()].length - 1][i];
+                            const zodArg: ZodTypeAny = this.eventsArgs.serverToClient[event.toString()][this.eventsArgs.serverToClient[event.toString()].length - 1][i];
                             zodArg.parse(ackArgs[i])
                         }
                         return arg(...ackArgs);
                     }
                 }
                 
-                return superEmit(event, ...newArgs);
+                return superEmit(event, ...args);
             }
             // adding a middleware to do type validation using the zod schema
             socket.use(([event, ...args], next) => {
                 
-                if (Object.keys(this.events.clientToServer).includes(event)) {
+                if (this.eventsArgs.clientToServer && Object.keys(this.eventsArgs.clientToServer).includes(event)) {
                     try {
-                        for (let i = 0; i < this.events.clientToServer[event].length; i++) {
-                            const zodArg = this.events.clientToServer[event][i];
-                            if (!Array.isArray(zodArg)) // ignoring the callback
+                        for (let i = 0; i < this.eventsArgs.clientToServer[event].length; i++) {
+                            const zodArg = this.eventsArgs.clientToServer[event][i];
+                            if (!this.isArray(zodArg)) {// ignoring the callback 
                                 zodArg.parse(args[i]);
+                            }
                         }
                         next();
                     }
@@ -95,5 +178,14 @@ export class Server< SocketData = {},
             })
             next();
         });
+    }
+
+    /**
+     * Narrowing method since Array.isArray() doesn't narrow readonly arrays
+     * @param arg object to narrow the type of
+     * @returns type narrowing if the argument is an Array or readonly Array
+     */
+    private isArray(arg: any): arg is any[] | readonly any[] {
+        return Array.isArray(arg);
     }
 }
