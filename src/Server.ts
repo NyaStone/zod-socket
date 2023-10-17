@@ -2,7 +2,12 @@ import {Server as ServerIO, ServerOptions} from "socket.io";
 import {Server as HttpServer} from "http";
 import {Server as HttpsServer} from "https";
 import { z, ZodTypeAny } from "zod";
-import { EventNames} from "socket.io/dist/typed-events";
+
+interface EventsMap {
+    [event: string]: any;
+  }
+  
+type EventNames<Map extends EventsMap> = keyof Map & (string | symbol);
 
 
 /**
@@ -95,7 +100,10 @@ export class Server<SocketData = {},
     constructor(events: EventArgs, httpsServer: HttpsServer, opt?: Partial<ServerOptions>);
     constructor(events: EventArgs, port: number, opt?: Partial<ServerOptions>);
     constructor(events: EventArgs, opt?: Partial<ServerOptions>);
-    constructor(arg1: EventArgs, arg2?, arg3?) {
+    constructor(
+        arg1: EventArgs, 
+        arg2?: HttpServer | HttpsServer | number | Partial<ServerOptions>, 
+        arg3?: Partial<ServerOptions>) {
         super(arg2, arg3);
 
         if (!arg1.clientToServer) arg1.clientToServer = {};
@@ -110,25 +118,29 @@ export class Server<SocketData = {},
         // overriding the emit method to wrap the acknowlegement callback with a typechecking method
         // emitWithAck() uses emit under the hood so doesn't need to be changed
         this.emit = <E extends EventNames<EventFuncts["serverToClient"]>>(
-                event: E,
+                e: E,
                 ...args: EventFuncts['serverToClient'][E] extends ((...args: any) => any)
                     ? Parameters<EventFuncts['serverToClient'][E]>
                     : never) => {      
             const serverToClient = this.eventsArgs.serverToClient ? this.eventsArgs.serverToClient : {}
 
             if (typeof args[args.length - 1] === 'function') {
-                const arg: (...ackArgs) => void = args[args.length - 1];
-                args[args.length - 1] = ((...ackArgs) => {
+                const arg: (...ackArgs: any[]) => void = args[args.length - 1];
+                args[args.length - 1] = ((...ackArgs: any[]) => {
+                    const eventValidators = serverToClient[e.toString()];
+                    if (!eventValidators) throw new Error("Unknown event");
+                    const ackArgValidators = eventValidators[0];
+                    if (!Array.isArray(ackArgValidators)) throw new Error('Event without acknowlegement recieved function');
                     // typecheck the args
                     for (let i = 0; i < ackArgs.length; i++) {
-                        const zodArg: ZodTypeAny = serverToClient[event.toString()][0][i];
-                        zodArg.parse(ackArgs[i])
+                        const zodValidator = ackArgValidators[i];
+                        zodValidator.parse(ackArgs[i])
                     }
                     return arg(...ackArgs);
                 });
             }
             
-            return this._superEmit(event, ...args);
+            return this._superEmit(e, ...args);
         };
 
 
@@ -137,32 +149,41 @@ export class Server<SocketData = {},
             // extending the emit method to account for acknowlegement callback type validation 
             const superEmit = socket.emit;
             socket.emit = <E extends EventNames<EventFuncts["serverToClient"]>>(
-                event: E, 
+                e: E, 
                 ...args: EventFuncts['serverToClient'][E] extends ((...args: any) => any)
                     ? Parameters<EventFuncts["serverToClient"][E]>
                     : never) => {
             
+                const serverToClient = this.eventsArgs.serverToClient ? this.eventsArgs.serverToClient : {}
+                
                 if (typeof args[args.length - 1] === 'function') {
-                    const arg: (...ackArgs) => void = args[args.length - 1]
-                    args[args.length - 1] = (...ackArgs) => {
+                    const arg: (...ackArgs: any[]) => void = args[args.length - 1]
+                    args[args.length - 1] = (...ackArgs: any[]) => {
+                        const eventValidators = serverToClient[e.toString()];
+                        if (!eventValidators) throw new Error("Unknown event");
+                        const ackArgValidators = eventValidators[0];
+                        if (!Array.isArray(ackArgValidators)) throw new Error('Event without acknowlegement recieved function');
                         // typecheck the args
                         for (let i = 0; i < ackArgs.length; i++) {
-                            const zodArg: ZodTypeAny = this.eventsArgs.serverToClient[event.toString()][this.eventsArgs.serverToClient[event.toString()].length - 1][i];
-                            zodArg.parse(ackArgs[i])
+                            const zodValidator = ackArgValidators[i];
+                            zodValidator.parse(ackArgs[i])
                         }
                         return arg(...ackArgs);
                     }
                 }
                 
-                return superEmit(event, ...args);
+                return superEmit(e, ...args);
             }
             // adding a middleware to do type validation using the zod schema
             socket.use(([event, ...args], next) => {
                 
                 if (this.eventsArgs.clientToServer && Object.keys(this.eventsArgs.clientToServer).includes(event)) {
                     try {
-                        for (let i = 0; i < this.eventsArgs.clientToServer[event].length; i++) {
-                            const zodArg = this.eventsArgs.clientToServer[event][i];
+                        const eventValidators = this.eventsArgs.clientToServer[event];
+                        if (!eventValidators) throw new Error('Unknown incomming event');
+                        for (let i = 0; i < eventValidators.length; i++) {
+                            const zodArg = eventValidators[i];
+                            if (!zodArg) throw new Error('Unkown incomming event argument')
                             if (!this.isArray(zodArg)) {// ignoring the callback 
                                 zodArg.parse(args[i]);
                             }
@@ -170,7 +191,7 @@ export class Server<SocketData = {},
                         next();
                     }
                     catch (e) {
-                        next(e);
+                        next(e as Error);
                     }
                 }
                 else next();
